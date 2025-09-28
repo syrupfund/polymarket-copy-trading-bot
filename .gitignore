@@ -4,6 +4,8 @@
 .env.local
 .env.production
 
+!.env.example
+
 # Python
 __pycache__/
 *.pyc

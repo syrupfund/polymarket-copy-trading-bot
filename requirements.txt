@@ -1,0 +1,8 @@
+py-clob-client==0.18.0
+web3==7.6.1
+bip-utils==2.9.3
+python-dotenv==1.0.0
+pymongo==4.6.1
+requests==2.31.0
+colorama==0.4.6
+schedule==1.2.0
