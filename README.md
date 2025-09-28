@@ -1,6 +1,8 @@
 # Polymarket Copy Trading Bot - Enhanced Python Version
 
-A sophisticated Python bot that automatically copies trades from any Polymarket trader in real-time.
+
+##Translation of the Typescript copy trading bot from Trust412 https://github.com/Trust412/polymarket-copy-trading-bot-v1
+Sophisticated Python bot that automatically copies trades from any Polymarket trader in real-time. 
 
 ## 🚀 Features
 
