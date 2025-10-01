@@ -171,54 +171,103 @@ class TradeExecutor:
             return False
     
     def _execute_sell_strategy(self, trade: UserActivity, my_position: Optional[UserPosition], 
-                             target_position: Optional[UserPosition]) -> bool:
-        """Execute sell strategy with proportional sizing"""
+                         target_position: Optional[UserPosition]) -> bool:
+        """Execute sell strategy using limit orders at market price"""
         try:
+            # Check if we have a position to sell
             if not my_position or my_position.size <= 0:
-                print(f"{Fore.YELLOW}⚠️ No position to sell{Style.RESET_ALL}")
+                print(f"{Fore.YELLOW}⚠️ No position to sell for {trade.outcome}{Style.RESET_ALL}")
                 return True
             
-            # Calculate how much to sell
-            if not target_position:
-                # Target closed entire position, sell everything
-                sell_amount = my_position.size
-            else:
-                # Calculate proportional sell
-                sell_ratio = trade.size / (target_position.size + trade.size)
-                sell_amount = my_position.size * sell_ratio
+            print(f"📊 Current position: {my_position.size:.2f} shares of {trade.outcome}")
+            print(f"📉 Target is selling: {trade.size:.2f} shares")
             
-            # Minimum sell amount
+            # 1:1 copy selling with safety checks
+            sell_amount = min(trade.size, my_position.size)
+            
+            # Add a small buffer to prevent rounding errors
+            sell_amount = sell_amount * 0.999
+            
+            if trade.size > my_position.size:
+                print(f"{Fore.YELLOW}⚠️ Target sold {trade.size:.2f} shares but you only have {my_position.size:.2f}. Selling {sell_amount:.2f}{Style.RESET_ALL}")
+            
+            # Minimum sell amount check
             if sell_amount < 0.01:
-                print(f"{Fore.YELLOW}⚠️ Sell amount too small: {sell_amount:.3f}{Style.RESET_ALL}")
+                print(f"{Fore.YELLOW}⚠️ Sell amount too small: {sell_amount:.3f} shares{Style.RESET_ALL}")
                 return True
             
-            print(f"📉 Selling {sell_amount:.2f} shares of {trade.outcome}")
+            print(f"💰 Attempting to sell {sell_amount:.2f} shares of {trade.outcome}")
             
-            # Get current market price
+            # Get orderbook to find best bid price
             try:
-                current_price_data = self.clob_client.get_last_trade_price(trade.asset)
-                current_price = float(current_price_data.get('price', trade.price))
-            except:
-                current_price = trade.price
+                orderbook = self.clob_client.get_order_book(trade.asset)
+                
+                if not orderbook.bids or len(orderbook.bids) == 0:
+                    print(f"{Fore.RED}❌ No bids available in orderbook{Style.RESET_ALL}")
+                    return False
+                
+                # Find best bid (highest price someone is willing to pay)
+                best_bid_price = max(float(bid.price) for bid in orderbook.bids)
+                print(f"💵 Best bid price: ${best_bid_price:.3f}")
+                
+            except Exception as e:
+                print(f"{Fore.YELLOW}⚠️ Could not get orderbook, using trade price: {e}{Style.RESET_ALL}")
+                best_bid_price = trade.price
             
-            # Create market sell order
-            market_order_args = MarketOrderArgs(
+            # Round to reasonable precision
+            sell_amount_rounded = round(sell_amount, 2)
+            
+            print(f"📝 Creating LIMIT sell order: {sell_amount_rounded} shares at ${best_bid_price:.3f}")
+            
+            # Import SELL constant
+            from py_clob_client.order_builder.constants import SELL
+            
+            # Use OrderArgs (limit order) instead of MarketOrderArgs
+            order_args = OrderArgs(
                 token_id=trade.asset,
-                amount=sell_amount,          
+                price=best_bid_price,
+                size=sell_amount_rounded,
+                side=SELL
             )
             
-            signed_order = self.clob_client.create_market_order(market_order_args)
+            # Create and sign the order
+            signed_order = self.clob_client.create_order(order_args)
+            
+            # Post as FOK (Fill Or Kill) - executes immediately or fails
             response = self.clob_client.post_order(signed_order, OrderType.FOK)
             
             if response.get('success', False):
-                print(f"{Fore.GREEN}✅ Successfully sold {sell_amount:.2f} shares{Style.RESET_ALL}")
+                print(f"{Fore.GREEN}✅ Successfully sold {sell_amount_rounded:.2f} shares at ${best_bid_price:.3f}{Style.RESET_ALL}")
                 return True
             else:
-                print(f"{Fore.RED}❌ Sell order failed: {response}{Style.RESET_ALL}")
+                error_msg = response.get('error', response)
+                print(f"{Fore.RED}❌ Sell order failed: {error_msg}{Style.RESET_ALL}")
+                
+                # Try with a slightly lower amount if balance error
+                if 'balance' in str(error_msg).lower():
+                    retry_amount = round(sell_amount_rounded * 0.95, 2)  # Try 95%
+                    print(f"{Fore.YELLOW}🔄 Retrying with {retry_amount:.2f} shares...{Style.RESET_ALL}")
+                    
+                    order_args_retry = OrderArgs(
+                        token_id=trade.asset,
+                        price=best_bid_price,
+                        size=retry_amount,
+                        side=SELL
+                    )
+                    
+                    signed_order_retry = self.clob_client.create_order(order_args_retry)
+                    response_retry = self.clob_client.post_order(signed_order_retry, OrderType.FOK)
+                    
+                    if response_retry.get('success', False):
+                        print(f"{Fore.GREEN}✅ Successfully sold {retry_amount:.2f} shares on retry{Style.RESET_ALL}")
+                        return True
+                
                 return False
                 
         except Exception as e:
             print(f"{Fore.RED}❌ Error in sell strategy: {e}{Style.RESET_ALL}")
+            import traceback
+            traceback.print_exc()
             return False
     
     def _execute_merge_strategy(self, trade: UserActivity, my_position: Optional[UserPosition]) -> bool:
@@ -238,16 +287,17 @@ class TradeExecutor:
                 return False
             
             # Find best bid price
-            best_bid = max(orderbook.bids, key=lambda x: float(x.price))
-            best_price = float(best_bid.price)
+            best_bid_price = max(float(bid.price) for bid in orderbook.bids)
+            print(f"💰 Best bid price: ${best_bid_price:.3f}")
             
-            print(f"💰 Best bid price: ${best_price:.3f}")
+            # Import SELL constant
+            from py_clob_client.order_builder.constants import SELL
             
             # Create limit sell order at best bid price
             order_args = OrderArgs(
                 token_id=trade.asset,
-                price=best_price,
-                size=my_position.size,
+                price=best_bid_price,
+                size=round(my_position.size * 0.999, 2),  # 99.9% to avoid rounding
                 side=SELL
             )
             
